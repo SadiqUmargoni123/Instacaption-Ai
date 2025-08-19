@@ -175,10 +175,9 @@ if admin_pass != os.getenv("ADMIN_PASSWORD"):
         st.error("Unauthorized access")
         return
     
-    # Dashboard tabs
+    # Dashboard tabs     
     tabs = st.tabs(["📊 Analytics", "💰 Ad Monetization", "👥 User Management", "⚙ Settings"])
-    
-    with tabs[0]:  # Analytics
+  with with[0]:                # Analytics
         conn = sqlite3.connect('instacaption_enterprise.db')
         
         # Real-time metrics
