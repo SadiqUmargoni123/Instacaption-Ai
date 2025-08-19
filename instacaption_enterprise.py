@@ -1,4 +1,3 @@
-# instacaption_enterprise.py
 import streamlit as st
 import sqlite3
 import hashlib
@@ -169,15 +168,14 @@ def enterprise_admin_dashboard():
     
     # Security
     admin_pass = st.sidebar.text_input("Admin Password", type="password", key="admin_pass")
-    
-   # With this (remove default):
-if admin_pass != os.getenv("ADMIN_PASSWORD"):
+    if admin_pass != os.getenv("ADMIN_PASSWORD", "admin123"):
         st.error("Unauthorized access")
         return
     
-    # Dashboard tabs     
+    # Dashboard tabs - FIXED INDENTATION
     tabs = st.tabs(["📊 Analytics", "💰 Ad Monetization", "👥 User Management", "⚙ Settings"])
-  with with[0]:                # Analytics
+    
+    with tabs[0]:  # Analytics
         conn = sqlite3.connect('instacaption_enterprise.db')
         
         # Real-time metrics
@@ -258,6 +256,425 @@ if admin_pass != os.getenv("ADMIN_PASSWORD"):
                 conn.commit()
                 st.success("Configurations updated!")
         else:
+            st.warning("No ad platforms configured yet")
+        
+        conn.close()
+    
+    with tabs[2]:  # User Management
+        st.subheader("User Management")
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        
+        # User search
+        search_term = st.text_input("Search users by device ID")
+        if search_term:
+            users = pd.read_sql(f"SELECT * FROM users WHERE device_id LIKE '%{search_term}%'", conn)
+        else:
+            users = pd.read_sql("SELECT * FROM users ORDER BY last_active DESC LIMIT 100", conn)
+        
+        if not users.empty:
+            st.dataframe(users)
+            
+            # User actions
+            user_id = st.selectbox("Select user for actions", users['id'])
+            action = st.selectbox("Action", ["Add coins", "Reset password", "Export data"])
+            
+            if action == "Add coins":
+                coins = st.number_input("Coins to add", min_value=1, max_value=100, value=10)
+                if st.button("Apply"):
+                    c = conn.cursor()
+                    c.execute("UPDATE users SET coins = coins + ? WHERE id=?", (coins, user_id))
+                    conn.commit()
+                    st.success(f"Added {coins} coins to user {user_id}")
+            
+            if st.button("Export All User Data"):
+                # Create ZIP with all data
+                users = pd.read_sql("SELECT * FROM users", conn)
+                captions = pd.read_sql("SELECT * FROM captions", conn)
+                
+                with zipfile.ZipFile('user_data_export.zip', 'w') as zipf:
+                    users.to_csv('users.csv', index=False)
+                    captions.to_csv('captions.csv', index=False)
+                    zipf.write('users.csv')
+                    zipf.write('captions.csv')
+                
+                with open('user_data_export.zip', 'rb') as f:
+                    st.download_button("Download Export", f, file_name="user_data_export.zip")
+        else:
+            st.info("No users found")
+        
+        conn.close()
+    
+    with tabs[3]:  # Settings
+        st.subheader("System Configuration")
+        
+        # Business settings
+        with st.form("business_settings"):
+            st.write("Monetization Strategy")
+            free_tier_ads = st.slider("Free tier ads required", 0, 5, 1)
+            premium_price = st.number_input("Premium subscription price ($)", min_value=0.99, max_value=99.99, value=4.99)
+            premium_benefits = st.text_area("Premium benefits", 
+                                          "✅ No ads\n✅ Priority processing\n✅ Advanced styles")
+            
+            if st.form_submit_button("Save Business Settings"):
+                # Save to config file
+                with open('business_config.json', 'w') as f:
+                    json.dump({
+                        "free_tier_ads": free_tier_ads,
+                        "premium_price": premium_price,
+                        "premium_benefits": premium_benefits
+                    }, f)
+                st.success("Business settings saved!")
+        
+        # System management
+        st.subheader("System Management")
+        if st.button("Backup Database"):
+            conn = sqlite3.connect('instacaption_enterprise.db')
+            with open('backup.sql', 'w') as f:
+                for line in conn.iterdump():
+                    f.write(f'{line}\n')
+            with open('backup.sql', 'rb') as f:
+                st.download_button("Download Backup", f, file_name="backup.sql")
+        
+        if st.button("Clear Cache"):
+            st.cache_resource.clear()
+            st.success("Cache cleared!")
+
+# ======================
+# 6. MAIN USER APP
+# ======================
+def main_user_app():
+    st.title("📸 InstaCaption AI Pro")
+    st.caption("Upload a photo → Get viral Instagram captions")
+    
+    # Initialize session
+    if 'device_id' not in st.session_state:
+        st.session_state.device_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:12]
+        st.session_state.coins = 0
+        st.session_state.caption_count = 0
+        st.session_state.ads_watched = 0
+        
+        # Register new user
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO users (device_id) VALUES (?)", (st.session_state.device_id,))
+        conn.commit()
+        conn.close()
+    
+    # User status bar
+    with st.container():
+        col1, col2 = st.columns([3,1])
+        with col1:
+            st.progress(st.session_state.caption_count % 10 / 10, text="Caption progress")
+        with col2:
+            st.metric("Coins", st.session_state.coins)
+    
+    # Upload section
+    uploaded_file = st.file_uploader("Upload Instagram Photo", type=["jpg", "png", "jpeg"])
+    
+    if uploaded_file:
+        img = Image.open(uploaded_file)
+        st.image(img, width=300)
+        
+        # Style selection
+        style = st.radio("Caption Style:", 
+                        ["🤩 Smart", "😂 Funny", "💬 Inspirational", "➖ Minimalist", "💼 Professional", "🎭 Dramatic"])
+        
+        # Ad requirement check
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        c = conn.cursor()
+        c.execute("SELECT ads_per_use FROM ad_configs WHERE is_active=1 ORDER BY priority LIMIT 1")
+        ad_req = c.fetchone()
+        ads_required = ad_req[0] if ad_req else 1
+        conn.close()
+        
+        # Check if user needs to watch ads
+        if st.session_state.caption_count > 0 and st.session_state.caption_count % 3 == 0:
+            st.warning(f"Watch {ads_required} ad(s) to unlock this caption")
+            ad_engine = AdMonetizationEngine()
+            
+            for i in range(ads_required):
+                if st.button(f"Watch Ad {i+1}/{ads_required}"):
+                    success, message = ad_engine.show_ads_to_user(st.session_state.user_id)
+                    if success:
+                        st.session_state.coins += st.session_state['current_ad']['coins']
+                        st.session_state.ads_watched += 1
+                        st.rerun()
+        
+        # Generate caption
+        if st.button("✨ Generate Caption", disabled=st.session_state.caption_count % 3 == 0 and st.session_state.ads_watched < ads_required):
+            with st.spinner("Creating your perfect caption..."):
+                # Generate caption
+                generator = CaptionGenerator()
+                caption, hashtags = generator.generate_caption(img, style)
+                
+                # Save to history
+                img_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
+                conn = sqlite3.connect('instacaption_enterprise.db')
+                c = conn.cursor()
+                c.execute("INSERT INTO captions (user_id, image_hash, caption, hashtags) VALUES (?, ?, ?, ?)",
+                         (st.session_state.user_id, img_hash, caption, hashtags))
+                c.execute("UPDATE users SET caption_count = caption_count + 1, last_active = ? WHERE device_id = ?",
+                         (datetime.datetime.now(), st.session_state.device_id))
+                conn.commit()
+                conn.close()
+                
+                # Update session
+                st.session_state.caption_count += 1
+                
+                # Display results
+                st.subheader("Your Caption")
+                st.success(caption)
+                st.subheader("Hashtags")
+                st.code(hashtags)
+                
+                # Copy to clipboard
+                st.download_button("📋 Copy to Clipboard", 
+                                  f"{caption}\n\n{hashtags}", 
+                                  "insta_caption.txt")
+
+# ======================
+# 7. APP ENTRY POINT
+# ======================
+def main():
+    st.sidebar.title("InstaCaption AI")
+    
+    # Navigation
+    app_mode = st.sidebar.selectbox("Navigation", ["📱 Main App", "🚀 Enterprise Dashboard"])
+    
+    if app_mode == "📱 Main App":
+        main_user_app()
+    else:
+        enterprise_admin_dashboard()
+
+if __name__ == "__main__":
+    main()            is_active = st.checkbox("Activate Platform", True)
+            
+            if st.form_submit_button("Save Configuration"):
+                conn = sqlite3.connect('instacaption_enterprise.db')
+                c = conn.cursor()
+                c.execute('''INSERT INTO ad_configs 
+                          (platform_name, api_key, priority, is_active, ads_per_use, min_coins) 
+                          VALUES (?, ?, ?, ?, ?, ?)''',
+                         (platform, api_key, priority, int(is_active), ads_per_use, min_coins))
+                conn.commit()
+                conn.close()
+                st.success(f"{platform} configuration saved!")
+        
+        # Current configurations
+        st.subheader("Active Ad Platforms")
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        configs = pd.read_sql("SELECT * FROM ad_configs ORDER BY priority", conn)
+        
+        if not configs.empty:
+            # Show as interactive table
+            edited_configs = st.data_editor(configs[['id', 'platform_name', 'priority', 
+                                                    'is_active', 'ads_per_use', 'min_coins']],
+                                          hide_index=True)
+            
+            # Save edits
+            if st.button("Save Changes"):
+                for _, row in edited_configs.iterrows():
+                    c = conn.cursor()
+                    c.execute('''UPDATE ad_configs 
+                              SET priority=?, is_active=?, ads_per_use=?, min_coins=? 
+                              WHERE id=?''',
+                             (row['priority'], row['is_active'], row['ads_per_use'], 
+                              row['min_coins'], row['id']))
+                conn.commit()
+                st.success("Configurations updated!")
+        else:
+            st.warning("No ad platforms configured yet")
+        
+        conn.close()
+    
+    with tabs[2]:  # User Management
+        st.subheader("User Management")
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        
+        # User search
+        search_term = st.text_input("Search users by device ID")
+        if search_term:
+            users = pd.read_sql(f"SELECT * FROM users WHERE device_id LIKE '%{search_term}%'", conn)
+        else:
+            users = pd.read_sql("SELECT * FROM users ORDER BY last_active DESC LIMIT 100", conn)
+        
+        if not users.empty:
+            st.dataframe(users)
+            
+            # User actions
+            user_id = st.selectbox("Select user for actions", users['id'])
+            action = st.selectbox("Action", ["Add coins", "Reset password", "Export data"])
+            
+            if action == "Add coins":
+                coins = st.number_input("Coins to add", min_value=1, max_value=100, value=10)
+                if st.button("Apply"):
+                    c = conn.cursor()
+                    c.execute("UPDATE users SET coins = coins + ? WHERE id=?", (coins, user_id))
+                    conn.commit()
+                    st.success(f"Added {coins} coins to user {user_id}")
+            
+            if st.button("Export All User Data"):
+                # Create ZIP with all data
+                users = pd.read_sql("SELECT * FROM users", conn)
+                captions = pd.read_sql("SELECT * FROM captions", conn)
+                
+                with zipfile.ZipFile('user_data_export.zip', 'w') as zipf:
+                    users.to_csv('users.csv', index=False)
+                    captions.to_csv('captions.csv', index=False)
+                    zipf.write('users.csv')
+                    zipf.write('captions.csv')
+                
+                with open('user_data_export.zip', 'rb') as f:
+                    st.download_button("Download Export", f, file_name="user_data_export.zip")
+        else:
+            st.info("No users found")
+        
+        conn.close()
+    
+    with tabs[3]:  # Settings
+        st.subheader("System Configuration")
+        
+        # Business settings
+        with st.form("business_settings"):
+            st.write("Monetization Strategy")
+            free_tier_ads = st.slider("Free tier ads required", 0, 5, 1)
+            premium_price = st.number_input("Premium subscription price ($)", min_value=0.99, max_value=99.99, value=4.99)
+            premium_benefits = st.text_area("Premium benefits", 
+                                          "✅ No ads\n✅ Priority processing\n✅ Advanced styles")
+            
+            if st.form_submit_button("Save Business Settings"):
+                # Save to config file
+                with open('business_config.json', 'w') as f:
+                    json.dump({
+                        "free_tier_ads": free_tier_ads,
+                        "premium_price": premium_price,
+                        "premium_benefits": premium_benefits
+                    }, f)
+                st.success("Business settings saved!")
+        
+        # System management
+        st.subheader("System Management")
+        if st.button("Backup Database"):
+            conn = sqlite3.connect('instacaption_enterprise.db')
+            with open('backup.sql', 'w') as f:
+                for line in conn.iterdump():
+                    f.write(f'{line}\n')
+            with open('backup.sql', 'rb') as f:
+                st.download_button("Download Backup", f, file_name="backup.sql")
+        
+        if st.button("Clear Cache"):
+            st.cache_resource.clear()
+            st.success("Cache cleared!")
+
+# ======================
+# 6. MAIN USER APP
+# ======================
+def main_user_app():
+    st.title("📸 InstaCaption AI Pro")
+    st.caption("Upload a photo → Get viral Instagram captions")
+    
+    # Initialize session
+    if 'device_id' not in st.session_state:
+        st.session_state.device_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:12]
+        st.session_state.coins = 0
+        st.session_state.caption_count = 0
+        st.session_state.ads_watched = 0
+        
+        # Register new user
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO users (device_id) VALUES (?)", (st.session_state.device_id,))
+        conn.commit()
+        conn.close()
+    
+    # User status bar
+    with st.container():
+        col1, col2 = st.columns([3,1])
+        with col1:
+            st.progress(st.session_state.caption_count % 10 / 10, text="Caption progress")
+        with col2:
+            st.metric("Coins", st.session_state.coins)
+    
+    # Upload section
+    uploaded_file = st.file_uploader("Upload Instagram Photo", type=["jpg", "png", "jpeg"])
+    
+    if uploaded_file:
+        img = Image.open(uploaded_file)
+        st.image(img, width=300)
+        
+        # Style selection
+        style = st.radio("Caption Style:", 
+                        ["🤩 Smart", "😂 Funny", "💬 Inspirational", "➖ Minimalist", "💼 Professional", "🎭 Dramatic"])
+        
+        # Ad requirement check
+        conn = sqlite3.connect('instacaption_enterprise.db')
+        c = conn.cursor()
+        c.execute("SELECT ads_per_use FROM ad_configs WHERE is_active=1 ORDER BY priority LIMIT 1")
+        ad_req = c.fetchone()
+        ads_required = ad_req[0] if ad_req else 1
+        conn.close()
+        
+        # Check if user needs to watch ads
+        if st.session_state.caption_count > 0 and st.session_state.caption_count % 3 == 0:
+            st.warning(f"Watch {ads_required} ad(s) to unlock this caption")
+            ad_engine = AdMonetizationEngine()
+            
+            for i in range(ads_required):
+                if st.button(f"Watch Ad {i+1}/{ads_required}"):
+                    success, message = ad_engine.show_ads_to_user(st.session_state.user_id)
+                    if success:
+                        st.session_state.coins += st.session_state['current_ad']['coins']
+                        st.session_state.ads_watched += 1
+                        st.rerun()
+        
+        # Generate caption
+        if st.button("✨ Generate Caption", disabled=st.session_state.caption_count % 3 == 0 and st.session_state.ads_watched < ads_required):
+            with st.spinner("Creating your perfect caption..."):
+                # Generate caption
+                generator = CaptionGenerator()
+                caption, hashtags = generator.generate_caption(img, style)
+                
+                # Save to history
+                img_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
+                conn = sqlite3.connect('instacaption_enterprise.db')
+                c = conn.cursor()
+                c.execute("INSERT INTO captions (user_id, image_hash, caption, hashtags) VALUES (?, ?, ?, ?)",
+                         (st.session_state.user_id, img_hash, caption, hashtags))
+                c.execute("UPDATE users SET caption_count = caption_count + 1, last_active = ? WHERE device_id = ?",
+                         (datetime.datetime.now(), st.session_state.device_id))
+                conn.commit()
+                conn.close()
+                
+                # Update session
+                st.session_state.caption_count += 1
+                
+                # Display results
+                st.subheader("Your Caption")
+                st.success(caption)
+                st.subheader("Hashtags")
+                st.code(hashtags)
+                
+                # Copy to clipboard
+                st.download_button("📋 Copy to Clipboard", 
+                                  f"{caption}\n\n{hashtags}", 
+                                  "insta_caption.txt")
+
+# ======================
+# 7. APP ENTRY POINT
+# ======================
+def main():
+    st.sidebar.title("InstaCaption AI")
+    
+    # Navigation
+    app_mode = st.sidebar.selectbox("Navigation", ["📱 Main App", "🚀 Enterprise Dashboard"])
+    
+    if app_mode == "📱 Main App":
+        main_user_app()
+    else:
+        enterprise_admin_dashboard()
+
+if __name__ == "__main__":
+    main() else:
             st.warning("No ad platforms configured yet")
         
         conn.close()
